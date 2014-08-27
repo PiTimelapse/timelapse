@@ -1,0 +1,8 @@
+{
+  "name": "timelapse",
+  "description": "",
+  "dependencies": {
+    "gphoto2": "^0.1.6",
+    "socket.io": "^1.0.6"
+  }
+}
