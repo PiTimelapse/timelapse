@@ -3,6 +3,7 @@
   "description": "",
   "dependencies": {
     "gphoto2": "^0.1.6",
-    "socket.io": "^1.0.6"
+    "socket.io": "^1.0.6",
+    "usb-detection": "^1.0.3"
   }
 }
