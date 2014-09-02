@@ -15,6 +15,7 @@ var timelapses = [],
     PUBLIC_DIR = "/Users/paul/workspace/timelapse-webclient/public",
     meanBrightness = null,
     conf = require('./conf.json');
+var currentTlLocation = "";
 
 fs.readdir(PUBLIC_DIR, function (err, files) {
     var splitter = null;
@@ -44,7 +45,7 @@ io.on('connection', function (socket) {
         camera = findByPort(options.camera, cameras);
         camera.getConfig(function (err, settings) {
             if (err) {
-                socket.emit("error", err);
+                socket.emit("camera:error", err);
             } else {
                 config = settings.main.children.capturesettings.children;
                 socket.emit("camera:config", config);
@@ -53,11 +54,11 @@ io.on('connection', function (socket) {
     });
     socket.on('camera:takepicture', function () {
         camera.takePicture({download: true}, function (err1, data) {
-            if (err1) socket.emit('error', err1);
+            if (err1) socket.emit('camera:error', err1);
             var savePicture = function () {
                 previewLocation = "/" + new Date().getTime() + ".jpg";
                 fs.writeFile(PUBLIC_DIR + previewLocation, data, function (err3) {
-                    if (err3) socket.emit('error', err3);
+                    if (err3) socket.emit('camera:error', err3);
                     gm(PUBLIC_DIR + previewLocation).options({imageMagick: true}).identify("%[mean]", function (err, data) {
                         socket.emit('picture:preview', {location: previewLocation, meanBrightness: data});
                     });
@@ -67,7 +68,7 @@ io.on('connection', function (socket) {
                 savePicture();
             } else {
                 fs.unlink(PUBLIC_DIR + previewLocation, function (err2) {
-                    if (err2) socket.emit('error', err2);
+                    if (err2) socket.emit('camera:error', err2);
                     savePicture();
                 });
             }
@@ -75,52 +76,76 @@ io.on('connection', function (socket) {
     });
     socket.on('camera:changeprop', function (options) {
         console.log(options.value);
-        camera.setConfigValue(options.prop, options.value+"", function (err) {
-            camera.getConfig(function (err, settings) {
-                config = settings.main.children.capturesettings.children
-                for (key in config) {
-                    if (config[key].choices) {
-                        config[key].choices = config[key].choices.map(function (item) {
-                            if (item.toLowerCase().indexOf("unknown") !== -1) {
-                                return [];
-                            }
-                            return item;
-                        });
-                    }
-                }
-                socket.emit("camera:config", config);
-            });
+        changeSetting(options.prop, options.value, function () {
+            socket.emit("camera:config", config);
         });
     });
     socket.on('timelapse:start', function (options) {
         var location = PUBLIC_DIR + "/" + new Date().getTime(),
             id = 0;
-        fs.mkdir(location, function (err) {
-            tl = setInterval(function () {
-                camera.takePicture({download: true}, function (err, data) {
-                    if (err) socket.emit('error', err);
-                    id += 1;
-                    var filename = location + "/" + id + ".jpg";
-                    fs.writeFile(filename, data, function (err) {
-                        if (err) socket.emit("error", err);
-                        gm(filename).options({imageMagick: true}).identify("-format %[mean]", function (err, mean) {
-                            if (meanBrightness !== null) {
-                                //compare the brightness and correct
-                                if (mean < conf.MIN_BRIGHTNESS) {
-                                    // Increase shutter speed
-                                } else if (mean > conf.MAX_BRIGHTNESS) {
-                                    // Decrease shutter speed
-                                }
+        currentTlLocation = location;
+        var tlPicture = function () {
+            camera.takePicture({download: true}, function (err, data) {
+                if (err) socket.emit('camera:error', err);
+                id += 1;
+                var filename = location + "/" + id + ".jpg";
+                fs.writeFile(filename, data, function (err) {
+                    if (err) socket.emit("camera:error", err);
+                    gm(filename).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
+                        //compare the brightness and correct
+                        if (mean < conf.MIN_BRIGHTNESS) {
+                            // Increase shutter speed
+                            console.log("Too dark");
+                            var shutterId = config.shutterspeed.choices.indexOf(config.shutterspeed.value);
+                            if (shutterId !== config.shutterspeed.choices.length - 1) {
+                                var shutter = config.shutterspeed.choices[shutterId - 1];
+                                changeSetting("shutterspeed", shutter, function (nConfig) {
+                                    meanBrightness = mean;
+                                    socket.emit("camera:config", nConfig);
+                                    tl = setTimeout(tlPicture, options.delay * 1000);
+                                    return;
+                                });
                             }
-                            meanBrightness = mean;
-                        });
+                        } else if (mean > conf.MAX_BRIGHTNESS) {
+                            // Decrease shutter speed
+                            console.log("Too bright");
+                            var shutterId = config.shutterspeed.choices.indexOf(config.shutterspeed.value);
+                            if (shutterId !== 0) {
+                                var shutter = config.shutterspeed.choices[shutterId + 1];
+                                changeSetting("shutterspeed", shutter, function (nConfig) {
+                                    meanBrightness = mean;
+                                    socket.emit("camera:config", nConfig);
+                                    tl = setTimeout(tlPicture, options.delay * 1000);
+                                    return;
+                                });
+                            }
+                        } else {
+                            tl = setTimeout(tlPicture, options.delay * 1000);
+                            return;
+                        }
                     });
                 });
-            }, options.delay * 1000);
+            });
+        }
+        fs.mkdir(location, function (err) {
+            tlPicture();
         });
     });
     socket.on('timelapse:stop', function () {
-        clearInterval(tl);
+        clearTimeout(tl);
+        fs.readdir(currentTlLocation, function (err, files) {
+            var splitter = null;
+            for (var i = 0; i < files.length; i += 1) {
+                if (typeof files[i] == "undefined") {
+                    files.splice(i, 1);
+                }
+                splitter = files[i].split('.');
+                if (splitter[splitter.length - 1].toLowerCase() === "jpg") {
+                    //gm(files[i]).mogrify()
+                    console.log(files[i]);
+                }
+            }
+        })
     });
 });
 
@@ -184,4 +209,23 @@ function findByPort (needle, stack) {
         }
     }
     return null;
+}
+function changeSetting (prop, value, callback) {
+    console.log("Setting " + prop + " to " + value);
+    camera.setConfigValue(prop, value+"", function (err) {
+        camera.getConfig(function (err, settings) {
+            config = settings.main.children.capturesettings.children
+            for (key in config) {
+                if (config[key].choices) {
+                    config[key].choices = config[key].choices.map(function (item) {
+                        if (item.toLowerCase().indexOf("unknown") !== -1) {
+                            return [];
+                        }
+                        return item;
+                    });
+                }
+            }
+            callback(config);
+        });
+    });
 }
