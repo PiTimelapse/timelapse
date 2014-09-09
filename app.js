@@ -35,7 +35,7 @@ Controller.prototype.init = function (callback) {
             _this.timelapses = tls;
             GPhoto.list(function (list) {
                 //mini hack
-                list = [emulatedCamera];
+                //list = [emulatedCamera];
                 if (list.length) {
                     gphotoCamera = list[0];
                     _this.camera = new Camera(gphotoCamera);
@@ -97,15 +97,17 @@ Controller.prototype.takePicture = function () {
 
 Controller.prototype.savePicture = function (path, data, callback) {
     this.preview = path;
-    fs.writeFile(this.preview, data, function (err) {
-        if (err) this.socket.emit('fs:error', err);
-        gm(PUBLIC_DIR + previewLocation).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
-            //TODO send picture through socket
-            var data = null;
-            this.socket.emit("picture:preview", {data: data, mean: mean});
-            callback(this.preview);
+    (function (_this) {
+        fs.writeFile(_this.preview, data, function (err) {
+            if (err) _this.socket.emit('fs:error', err);
+            gm(_this.preview).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
+                //TODO send picture through socket
+                var data = null;
+                _this.socket.emit("picture:preview", {data: data, mean: mean});
+                callback(_this.preview);
+            });
         });
-    });
+    })(this);
 };
 Controller.prototype.removePreview = function () {
     fs.unlink(Controller.WORKING_DIR + this.preview, function (err) {
@@ -113,61 +115,76 @@ Controller.prototype.removePreview = function () {
     });
 };
 
-Controller.prototype.changeProperty = function () {
-    this.camera.changeProperty(function () {
-        this.socket.emit('camera:config', this.camera.config);
-    });
+Controller.prototype.changeProperty = function (options) {
+    (function (_this) {
+        _this.camera.changeProperty(options.prop, options.value, function () {
+            _this.socket.emit('camera:config', _this.camera.config);
+        });
+    })(this);
 }
 
 Controller.prototype.startTimelapse = function (options) {
-    this.currentTimelapse = new Timelapse(new Date(), options.delay);
-    this.currentTimelapse.setStep(tlPicture);
-    this.currentTimelapse.start();
-    this.camera.takePicture(function (err, data) {
-        if (err) throw err;
-        this.savePicture(this.currentTimelapse.nextPic(), data, function (path) {
-            // Getting the picture brightness
-            gm(path).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
-                //compare the brightness and correct
-                if (mean < conf.MIN_BRIGHTNESS) {
-                    // Increase shutter speed
-                    console.log("Too dark");
-                    var shutterId = this.config.shutterspeed.choices.indexOf(this.config.shutterspeed.value);
-                    if (shutterId !== this.config.shutterspeed.choices.length - 1) {
-                        var shutter = this.config.shutterspeed.choices[shutterId - 1];
-                        this.changeProperty("shutterspeed", shutter, function (nConfig) {
-                            this.currentTimelapse.schedule();
-                            return;
-                        });
-                    }
-                } else if (mean > conf.MAX_BRIGHTNESS) {
-                    // Decrease shutter speed
-                    console.log("Too bright");
-                    var shutterId = this.config.shutterspeed.choices.indexOf(this.config.shutterspeed.value);
-                    if (shutterId !== 0) {
-                        var shutter = this.config.shutterspeed.choices[shutterId + 1];
-                        this.changeProperty("shutterspeed", shutter, function (nConfig) {
-                            this.currentTimelapse.schedule();
-                            return;
-                        });
-                    }
-                } else {
-                    this.currentTimelapse.schedule();
-                    return;
-                }
-            });
-            // Auto gammaing the picture to remove all the little brightness bumps
-            childProcess.exec('mogrify ' + "/Users/paul/Pictures/Timelapses/tl_1410025653246/2.jpg" + " -auto-gamma", function () {
-                console.log(path + " mogrified");
+    if (!this.currentTimelapse.running || this.currentTimelapse === null) {
+        this.currentTimelapse = new Timelapse(new Date(), options.delay);
+        this.currentTimelapse.setStep(this.tlPicture.bind(this));
+        this.currentTimelapse.start();
+    }
+};
+
+Controller.prototype.tlPicture = function () {
+    (function (_this) {
+        _this.camera.takePicture(function (err, data) {
+            if (err) throw err;
+            _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path) {
+                _this.correctBrightness(path, _this.currentTimelapse.schedule.bind(_this.currentTimelapse));
+                // Auto gammaing the picture to remove all the little brightness bumps
+                childProcess.exec('mogrify ' + path + " -auto-gamma", function (error, stdout, stderr) {
+                    console.log(path + " mogrified");
+                });
             });
         });
-    });
+    })(this);
 };
+
+Controller.prototype.correctBrightness = function (path, callback) {
+    (function (_this) {
+        // Getting the picture brightness
+        gm(path).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
+            //compare the brightness and correct
+            if (mean < conf.MIN_BRIGHTNESS) {
+                // Increase shutter speed
+                console.log("Too dark");
+                var shutterId = _this.camera.config.shutterspeed.choices.indexOf(_this.camera.config.shutterspeed.value);
+                if (shutterId !== _this.camera.config.shutterspeed.choices.length - 1) {
+                    var shutter = _this.camera.config.shutterspeed.choices[shutterId - 1];
+                    _this.changeProperty("shutterspeed", shutter, function (nConfig) {
+                        callback();
+                        return;
+                    });
+                }
+            } else if (mean > conf.MAX_BRIGHTNESS) {
+                // Decrease shutter speed
+                console.log("Too bright");
+                var shutterId = _this.camera.config.shutterspeed.choices.indexOf(_this.camera.config.shutterspeed.value);
+                if (shutterId !== 0) {
+                    var shutter = _this.camera.config.shutterspeed.choices[shutterId + 1];
+                    _this.changeProperty("shutterspeed", shutter, function (nConfig) {
+                        callback();
+                        return;
+                    });
+                }
+            } else {
+                callback();
+                return;
+            }
+        });
+    })(this);
+
+}
 
 Controller.prototype.stopTimelapse = function () {
     this.currentTimelapse.stop();
     this.timelapses.push(this.currentTimelapse);
-    this.currentTimelapse = null;
 };
 
 var ctrl = new Controller();
