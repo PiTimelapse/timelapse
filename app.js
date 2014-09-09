@@ -124,7 +124,7 @@ Controller.prototype.changeProperty = function (options) {
 }
 
 Controller.prototype.startTimelapse = function (options) {
-    if (!this.currentTimelapse.running || this.currentTimelapse === null) {
+    if (this.currentTimelapse === null || !this.currentTimelapse.running) {
         this.currentTimelapse = new Timelapse(new Date(), options.delay);
         this.currentTimelapse.setStep(this.tlPicture.bind(this));
         this.currentTimelapse.start();
