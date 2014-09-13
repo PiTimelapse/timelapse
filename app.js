@@ -80,14 +80,17 @@ Controller.prototype.checkCamera = function () {
 Controller.prototype.startServer = function (callback) {
     (function (_this) {
         _this.server = http.createServer(function (req, res) {
-            fs.readFile(_this.preview, function (err, data) {
-                if (err) {
-                    res.end("OK", 200);
-                } else {
-                    res.writeHead(200, {'Content-Type': 'image/'+Timelapse.ext});
-                    res.end(data);
-                }
-            });
+            if (req.url.substr(req.url.length - 3) === "pic") {
+                console.log('read');
+                fs.readFile(_this.preview, function (err, data) {
+                    if (err) {
+                        res.end("OK", 200);
+                    } else {
+                        res.writeHead(200, {'Content-Type': 'image/'+Timelapse.ext});
+                        res.end(data);
+                    }
+                });
+            }
         });
         _this.io = require('socket.io')(_this.server);
         _this.io.on('connection', _this.onConnection.bind(_this));
