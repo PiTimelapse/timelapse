@@ -150,11 +150,15 @@ Controller.prototype.savePicture = function (path, data, callback) {
     callback = callback || function () {};
     this.preview = path;
     (function (_this) {
+        _this.perf("Start writing");
         fs.writeFile(_this.preview, data, function (err) {
+            _this.perf('End writing');
             if (err) _this.socket.emit('fs:error', err);
+            _this.perf('Start identify');
             gm(_this.preview).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
+                _this.perf('End identify');
                 _this.io.emit("picture:preview", {mean: mean});
-                callback(_this.preview);
+                callback(_this.preview, mean);
             });
         });
     })(this);
@@ -196,9 +200,9 @@ Controller.prototype.tlPicture = function () {
                 _this.currentTimelapse.step();
                 return;
             }
-            _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path) {
+            _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path, mean) {
                 _this.io.emit("timelapse:picture");
-                _this.correctBrightness(path, _this.currentTimelapse.schedule.bind(_this.currentTimelapse));
+                _this.correctBrightness(path, mean, _this.currentTimelapse.schedule.bind(_this.currentTimelapse));
                 // Auto gammaing the picture to remove all the little brightness bumps
                 childProcess.exec('mogrify ' + path + " -auto-gamma", function (error, stdout, stderr) {
                     console.log(path + " mogrified");
@@ -208,41 +212,37 @@ Controller.prototype.tlPicture = function () {
     })(this);
 };
 
-Controller.prototype.correctBrightness = function (path, callback) {
+Controller.prototype.correctBrightness = function (path, mean, callback) {
     (function (_this) {
-        // Getting the picture brightness
-        gm(path).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
-            console.log(mean);
-            //compare the brightness and correct
-            if (mean < parseInt(_this.conf.MIN_BRIGHTNESS)) {
-                // Increase shutter speed
-                console.log("Brightness correction: Too dark");
-                var shutterId = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.indexOf(_this.camera.config[_this.conf.BRIGHTNESS_DRIVER].value);
-                if (shutterId !== _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.length - 1) {
-                    var shutter = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices[shutterId - 1];
-                    _this.changeProperty({prop: _this.conf.BRIGHTNESS_DRIVER, value: shutter}, function (nConfig) {
-                        _this.info("Picture too dark, " + _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].label+" changed to " + shutter);
-                        callback();
-                        return;
-                    });
-                }
-            } else if (mean > parseInt(_this.conf.MAX_BRIGHTNESS)) {
-                // Decrease shutter speed
-                console.log("Brightness correction: Too bright");
-                var shutterId = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.indexOf(_this.camera.config[_this.conf.BRIGHTNESS_DRIVER].value);
-                if (shutterId !== 0) {
-                    var shutter = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices[shutterId + 1];
-                    _this.changeProperty({prop: _this.conf.BRIGHTNESS_DRIVER, value: shutter}, function (nConfig) {
-                        _this.info("Picture too bright, " + _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].label + " changed to " + shutter);
-                        callback();
-                        return;
-                    });
-                }
-            } else {
-                callback();
-                return;
+        //compare the brightness and correct
+        if (mean < parseInt(_this.conf.MIN_BRIGHTNESS)) {
+            // Increase shutter speed
+            console.log("Brightness correction: Too dark");
+            var shutterId = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.indexOf(_this.camera.config[_this.conf.BRIGHTNESS_DRIVER].value);
+            if (shutterId !== _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.length - 1) {
+                var shutter = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices[shutterId - 1];
+                _this.changeProperty({prop: _this.conf.BRIGHTNESS_DRIVER, value: shutter}, function (nConfig) {
+                    _this.info("Picture too dark, " + _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].label+" changed to " + shutter);
+                    callback();
+                    return;
+                });
             }
-        });
+        } else if (mean > parseInt(_this.conf.MAX_BRIGHTNESS)) {
+            // Decrease shutter speed
+            console.log("Brightness correction: Too bright");
+            var shutterId = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.indexOf(_this.camera.config[_this.conf.BRIGHTNESS_DRIVER].value);
+            if (shutterId !== 0) {
+                var shutter = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices[shutterId + 1];
+                _this.changeProperty({prop: _this.conf.BRIGHTNESS_DRIVER, value: shutter}, function (nConfig) {
+                    _this.info("Picture too bright, " + _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].label + " changed to " + shutter);
+                    callback();
+                    return;
+                });
+            }
+        } else {
+            callback();
+            return;
+        }
     })(this);
 
 }
@@ -260,7 +260,10 @@ Controller.prototype.stopTimelapse = function () {
 Controller.prototype.info = function (msg) {
     console.log(msg);
     this.io.emit('tl:info', msg);
-}
+};
+Controller.prototype.perf = function (msg) {
+    console.log('PERF: '+msg);
+};
 
 var ctrl = new Controller();
 ctrl.init();
