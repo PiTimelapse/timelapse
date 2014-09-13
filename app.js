@@ -4,7 +4,6 @@ var gm = require('gm');
 var fs = require('fs');
 var http = require('http');
 var childProcess = require('child_process');
-var conf = require('./conf.json');
 var monitor = require('usb-detection');
 var os = require('os');
 
@@ -21,8 +20,9 @@ var Controller = function () {
     this.timelapses = null;
     this.currentTimelapse = null;
     this.io = null;
-    this.preview = "";
+    this.preview = "preview" + Timelapse.ext;
     this.socket = null;
+    this.conf = require('./conf.json');
 }
 // the folder where the pictures will be saved
 Controller.WORKING_DIR = process.env.TIMELAPSE_DIR === 0 ? __dirname : process.env.TIMELAPSE_DIR;
@@ -107,11 +107,12 @@ Controller.prototype.onConnection = function (socket) {
         if (this.camera !== null){
             this.socket = socket;
             var tl = this.currentTimelapse && this.currentTimelapse.running ? {photoNb: this.currentTimelapse.pictures.length} : null;
-            this.socket.emit("init", {camera: this.camera, conf: conf, timelapses: this.timelapses, currentTimelapse: tl});
+            this.socket.emit("init", {camera: this.camera, conf: this.conf, timelapses: this.timelapses, currentTimelapse: tl});
             this.socket.on('camera:takepicture', this.takePicture.bind(this));
             this.socket.on('camera:changeprop', this.changeProperty.bind(this));
             this.socket.on('timelapse:start', this.startTimelapse.bind(this));
             this.socket.on('timelapse:stop', this.stopTimelapse.bind(this));
+            this.socket.on('advanced:change', this.changeConf.bind(this));
         } else {
             this.socket.emit("nocamera");
         }
@@ -124,22 +125,26 @@ Controller.prototype.onDisconnect = function () {
     this.socket = null;
 };
 
+Controller.prototype.changeConf = function (conf) {
+    this.conf = conf;
+    fs.writeFile('conf.json', JSON.stringify(conf));
+    this.io.emit('info', "Advanced options updated");
+};
+
 Controller.prototype.takePicture = function () {
-    var path = Timelapse.WORKING_DIR + "/" + new Date().getTime() + "." + Timelapse.ext;
-    this.camera.takePicture({download: true}, function (err1, data) {
-        if (err1) this.io.emit('camera:error', err1);
-        if (this.preview === null) {
-            this.savePicture(path, data);
-        } else {
-            this.removePreview(function (err) {
-                if (err) throw err;
-                this.savePicture(path, data);
+    var path = "preview." + Timelapse.ext;
+    (function (_this) {
+        _this.camera.takePicture(function (err1, data) {
+            if (err1) _this.io.emit('camera:error', err1);
+            _this.removePreview(function (err) {
+                _this.savePicture(path, data);
             });
-        }
-    });
+        });
+    })(this);
 };
 
 Controller.prototype.savePicture = function (path, data, callback) {
+    callback = callback || function () {};
     this.preview = path;
     (function (_this) {
         fs.writeFile(_this.preview, data, function (err) {
@@ -151,7 +156,8 @@ Controller.prototype.savePicture = function (path, data, callback) {
         });
     })(this);
 };
-Controller.prototype.removePreview = function () {
+Controller.prototype.removePreview = function (callback) {
+    callback = callback || function () {};
     fs.unlink(Controller.WORKING_DIR + this.preview, function (err) {
         callback(err);
     });
@@ -167,6 +173,7 @@ Controller.prototype.changeProperty = function (options, callback) {
 }
 
 Controller.prototype.startTimelapse = function (options) {
+    console.log(options);
     if (this.currentTimelapse === null || !this.currentTimelapse.running) {
         this.currentTimelapse = new Timelapse(new Date(), options.delay);
         this.currentTimelapse.setStep(this.tlPicture.bind(this));
@@ -180,8 +187,10 @@ Controller.prototype.startTimelapse = function (options) {
 Controller.prototype.tlPicture = function () {
     (function (_this) {
         _this.camera.takePicture(function (err, data) {
+            // If there is an error while taking the picture, schedule the next try with the same file name
             if (err) {
-                _this.io.emit("camera:error", err);
+                _this.io.emit("camera:error", "An error occured while taking the picture, maybe it's the autofocus");
+                _this.currentTimelapse.step();
                 return;
             }
             _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path) {
@@ -200,27 +209,28 @@ Controller.prototype.correctBrightness = function (path, callback) {
     (function (_this) {
         // Getting the picture brightness
         gm(path).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
+            console.log(mean);
             //compare the brightness and correct
-            if (mean < conf.MIN_BRIGHTNESS) {
+            if (mean < parseInt(_this.conf.MIN_BRIGHTNESS)) {
                 // Increase shutter speed
                 console.log("Brightness correction: Too dark");
-                var shutterId = _this.camera.config.shutterspeed.choices.indexOf(_this.camera.config.shutterspeed.value);
-                if (shutterId !== _this.camera.config.shutterspeed.choices.length - 1) {
-                    var shutter = _this.camera.config.shutterspeed.choices[shutterId - 1];
-                    _this.changeProperty({prop: "shutterspeed", value: shutter}, function (nConfig) {
-                        _this.info("Picture too dark, shutter speed changed to " + shutter);
+                var shutterId = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.indexOf(_this.camera.config[_this.conf.BRIGHTNESS_DRIVER].value);
+                if (shutterId !== _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.length - 1) {
+                    var shutter = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices[shutterId - 1];
+                    _this.changeProperty({prop: _this.conf.BRIGHTNESS_DRIVER, value: shutter}, function (nConfig) {
+                        _this.info("Picture too dark, " + _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].label+" changed to " + shutter);
                         callback();
                         return;
                     });
                 }
-            } else if (mean > conf.MAX_BRIGHTNESS) {
+            } else if (mean > parseInt(_this.conf.MAX_BRIGHTNESS)) {
                 // Decrease shutter speed
                 console.log("Brightness correction: Too bright");
-                var shutterId = _this.camera.config.shutterspeed.choices.indexOf(_this.camera.config.shutterspeed.value);
+                var shutterId = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices.indexOf(_this.camera.config[_this.conf.BRIGHTNESS_DRIVER].value);
                 if (shutterId !== 0) {
-                    var shutter = _this.camera.config.shutterspeed.choices[shutterId + 1];
-                    _this.changeProperty({prop: "shutterspeed", value: shutter}, function (nConfig) {
-                        _this.info("Picture too bright, shutter speed changed to " + shutter);
+                    var shutter = _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].choices[shutterId + 1];
+                    _this.changeProperty({prop: _this.conf.BRIGHTNESS_DRIVER, value: shutter}, function (nConfig) {
+                        _this.info("Picture too bright, " + _this.camera.config[_this.conf.BRIGHTNESS_DRIVER].label + " changed to " + shutter);
                         callback();
                         return;
                     });
