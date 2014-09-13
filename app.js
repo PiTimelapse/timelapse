@@ -21,7 +21,7 @@ var Controller = function () {
     this.timelapses = null;
     this.currentTimelapse = null;
     this.io = null;
-    this.preview = null;
+    this.preview = "";
     this.socket = null;
 }
 // the folder where the pictures will be saved
@@ -78,13 +78,22 @@ Controller.prototype.checkCamera = function () {
  * Configure and start the socket server
  */
 Controller.prototype.startServer = function (callback) {
-    this.server = http.createServer(function (req, res) {
-        res.end("OK", 200);
-    });
-    this.io = require('socket.io')(this.server);
-    this.io.on('connection', this.onConnection.bind(this));
-    this.server.listen(3000);
-    console.log("Server started on port 3000");
+    (function (_this) {
+        _this.server = http.createServer(function (req, res) {
+            fs.readFile(_this.preview, function (err, data) {
+                if (err) {
+                    res.end("OK", 200);
+                } else {
+                    res.writeHead(200, {'Content-Type': 'image/'+Timelapse.ext});
+                    res.end(data);
+                }
+            });
+        });
+        _this.io = require('socket.io')(_this.server);
+        _this.io.on('connection', _this.onConnection.bind(_this));
+        _this.server.listen(3000);
+        console.log("Server started on port 3000");
+    })(this);
 };
 
 Controller.prototype.onConnection = function (socket) {
@@ -136,9 +145,7 @@ Controller.prototype.savePicture = function (path, data, callback) {
         fs.writeFile(_this.preview, data, function (err) {
             if (err) _this.socket.emit('fs:error', err);
             gm(_this.preview).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
-                //TODO send picture through socket
-                var data = null;
-                _this.io.emit("picture:preview", {data: data, mean: mean});
+                _this.io.emit("picture:preview", {mean: mean});
                 callback(_this.preview);
             });
         });
