@@ -151,14 +151,17 @@ Controller.prototype.savePicture = function (path, data, callback) {
     this.preview = path;
     (function (_this) {
         _this.perf("Start writing");
+        var start = new Date();
         fs.writeFile(_this.preview, data, function (err) {
             _this.perf('End writing');
             if (err) _this.socket.emit('fs:error', err);
             _this.perf('Start identify');
             gm(_this.preview).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
                 _this.perf('End identify');
-                _this.io.emit("picture:preview", {mean: mean});
-                callback(_this.preview, mean);
+                var end = new Date(),
+                    delay = end - start;
+                _this.io.emit("picture:preview", {mean: mean, delay: delay + Math.max(0, _this.currentTimelapse.interval - delay)});
+                callback(_this.preview, mean, delay);
             });
         });
     })(this);
@@ -200,9 +203,9 @@ Controller.prototype.tlPicture = function () {
                 _this.currentTimelapse.step();
                 return;
             }
-            _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path, mean) {
+            _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path, mean, delay) {
                 _this.io.emit("timelapse:picture");
-                _this.correctBrightness(path, mean, _this.currentTimelapse.schedule.bind(_this.currentTimelapse));
+                _this.correctBrightness(path, mean, _this.currentTimelapse.schedule.bind(_this.currentTimelapse, delay));
                 // Auto gammaing the picture to remove all the little brightness bumps
                 childProcess.exec('mogrify ' + path + " -auto-gamma", function (error, stdout, stderr) {
                     console.log(path + " mogrified");
