@@ -206,10 +206,6 @@ Controller.prototype.tlPicture = function () {
             _this.savePicture(_this.currentTimelapse.nextPic(), data, function (path, mean, delay) {
                 _this.io.emit("timelapse:picture");
                 _this.correctBrightness(path, mean, _this.currentTimelapse.schedule.bind(_this.currentTimelapse, delay));
-                // Auto gammaing the picture to remove all the little brightness bumps
-                childProcess.exec('mogrify ' + path + " -auto-gamma", function (error, stdout, stderr) {
-                    console.log(path + " mogrified");
-                });
             });
         });
     })(this);
@@ -255,6 +251,14 @@ Controller.prototype.stopTimelapse = function () {
         this.currentTimelapse.stop();
         this.timelapses.push(this.currentTimelapse);
         this.io.emit("timelapse:stop");
+        (function (_this) {
+            _this.currentTimelapse.autoGammaAll(function (percent, callback) {
+                _this.io.emit('process:step', {value: percent, type: "Auto gamma"});
+                callback();
+            }, function () {
+                _this.io.emit('process:end');
+            });
+        })(this);
     } else {
         this.info("No timelapse is running");
     }
