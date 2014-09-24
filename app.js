@@ -10,6 +10,7 @@ var os = require('os');
 var Timelapse = require('./lib/timelapse');
 var Camera = require('./lib/camera');
 var emulatedCamera = require('./lib/camera-emulator');
+var IR = require('./lib/node-ir/node-ir');
 
 /**
  * The controller object
@@ -23,6 +24,8 @@ var Controller = function () {
     this.preview = "preview" + Timelapse.ext;
     this.socket = null;
     this.conf = require('./conf.json');
+    this.ir = new IR(require('./config/binding.json'));
+    this.irInterval = 20;
 }
 // the folder where the pictures will be saved
 Controller.WORKING_DIR = process.env.TIMELAPSE_DIR === 0 ? __dirname : process.env.TIMELAPSE_DIR;
@@ -59,12 +62,17 @@ Controller.prototype.checkCamera = function () {
                 gphotoCamera = list[0];
                 _this.camera = new Camera(gphotoCamera);
                 _this.camera.refreshConfig();
+                _this.ir.removeAllListeners();
+                _this.ir.on('play', _this.takePicture.bind(_this));
+                _this.ir.once('config', _this.onIRInterval.bind(_this));
+                _this.ir.once('ok', _this.onIRStartTimelapse.bind(_this));
                 if (_this.socket) {
                     _this.socket.emit("camera", {camera: _this.camera});
                 }
                 console.log('Camera detected: ' + _this.camera.gphotoObject.model);
             } else {
                 _this.camera = null;
+                _this.ir.removeAllListeners();
                 if (_this.socket) {
                     _this.socket.emit("nocamera");
                 }
@@ -72,6 +80,48 @@ Controller.prototype.checkCamera = function () {
             }
         });
     })(this);
+};
+
+/**
+ * IR STUFF
+ */
+Controller.prototype.onIRNumber = function (nb) {
+    this.irInterval = this.irInterval * 10 + nb;
+    console.log(this.irInterval);
+};
+
+Controller.prototype.onIRCorrect = function () {
+    this.irInterval = Math.floor(this.irInterval / 10);
+    console.log(this.irInterval);
+};
+
+Controller.prototype.onIRInterval = function () {
+    this.irInterval = 0;
+    this.ir
+        .removeAllListeners('ok')
+        .on('number', this.onIRNumber.bind(this))
+        .on('correct', this.onIRCorrect.bind(this))
+        .once('config', this.endIrInterval.bind(this));
+};
+
+Controller.prototype.endIrInterval = function () {
+    this.irInterval = Math.max(4, this.irInterval);
+    console.log("Interval: "+this.irInterval);
+    this.ir
+        .removeAllListeners('number')
+        .removeAllListeners('correct')
+        .once('config', this.onIRInterval.bind(this))
+        .once('ok', this.onIRStartTimelapse.bind(this));
+};
+
+Controller.prototype.onIRStartTimelapse = function () {
+    this.ir.once('ok', this.onIRStopTimelapse.bind(this));
+    this.startTimelapse({delay: this.irInterval});
+};
+
+Controller.prototype.onIRStopTimelapse = function () {
+    this.stopTimelapse();
+    this.ir.once('ok', this.onIRStartTimelapse.bind(this));
 }
 
 /**
@@ -156,11 +206,13 @@ Controller.prototype.savePicture = function (path, data, callback) {
             _this.perf('End writing');
             if (err) _this.socket.emit('fs:error', err);
             _this.perf('Start identify');
+            _this.io.emit('picture:taken');
             gm(_this.preview).options({imageMagick: true}).identify("%[mean]", function (err, mean) {
                 _this.perf('End identify');
                 var end = new Date(),
                     delay = end - start;
-                _this.io.emit("picture:preview", {mean: mean, delay: delay + Math.max(0, _this.currentTimelapse.interval - delay)});
+                    total = _this.currentTimelapse ? delay + Math.max(0, _this.currentTimelapse.interval - delay) : 0;
+                _this.io.emit("picture:preview", {mean: mean, delay: total});
                 callback(_this.preview, mean, delay);
             });
         });
